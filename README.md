@@ -1,56 +1,25 @@
-# Robust Control of Markov Jump Linear Systems with Cluster Observations
+# Coupled Robust Riccati Solver for Cluster-Observed Markov Jump Linear Systems
 
-This repository provides the Python implementation accompanying the paper:
+Python implementation of a coupled robust Riccati recursion for discrete-time Markov jump linear systems with uncertain cluster observations.
 
-> **Control of Markov Jump Linear Systems with Lumpable Cluster Observations**  
-> Carlos A. F. Persiani, Ram Padmanabhan, Melkior Ornik, and Marco H. Terra.
+The implementation considers the case in which the true Markov mode is not directly available to the controller. Instead, the controller observes a cluster containing multiple possible modes. Uncertainty associated with both the system selection within each cluster and the cluster transition probabilities is incorporated into the Riccati recursion.
 
-The code implements the coupled robust Riccati recursions developed in the paper for the control of discrete-time Markov jump linear systems (MJLS) when the true Markov mode is not directly observed. Instead, the controller has access only to a cluster containing the current mode.
+The solver computes cluster-dependent stationary Riccati matrices and feedback gains and provides a numerical verification of sufficient stability conditions for the resulting closed-loop system.
 
-The proposed formulation accounts for uncertainty associated with both the active system dynamics and the transition probabilities between observed clusters.
+## Features
 
-## Main Implementation
-
-The main implementation is provided in:
-
-```text
-coupled_robust_riccati_v3.py
-```
-
-The `CoupledRobustRiccati` class implements the two main control formulations presented in the paper.
-
-### Theorem IV.3
-
-The method
-
-```python
-solve_TheoremIV3()
-```
-
-implements the coupled robust Riccati recursion presented in Theorem IV.3.
-
-The method considers finite penalty parameters and iteratively computes the coupled Riccati matrices and the corresponding cluster-dependent feedback gains.
-
-### Corollary V.1
-
-The method
-
-```python
-solve_CorollaryVI()
-```
-
-implements the limiting formulation presented in Corollary V.1, corresponding to the exact-dynamics limit used in the convergence and stability analysis.
-
-The Riccati equations associated with different observed clusters are solved simultaneously because their solutions are coupled through the uncertain cluster transition probabilities.
+- Coupled Riccati iteration over observable Markov clusters
+- Cluster-dependent state-feedback gains
+- Structured uncertainty in the system-selection matrices
+- Uncertainty bounds for cluster transition probabilities
+- Automatic construction of the robust auxiliary matrices
+- Convergence monitoring for the coupled Riccati recursion
+- Numerical verification of sufficient stability conditions
+- Stability margins reported independently for each cluster
 
 ## Requirements
 
-The implementation requires:
-
-- Python 3
-- NumPy
-
-Install the required dependency using:
+The implementation requires Python 3 and NumPy.
 
 ```bash
 pip install numpy
@@ -58,86 +27,203 @@ pip install numpy
 
 ## Usage
 
-A problem is defined by specifying:
+Import the solver:
 
-- the lifted system matrices;
-- the observed clusters;
-- the state, control, and lifted-state weighting matrices;
-- the nominal cluster transition probabilities;
-- the transition probability uncertainty bounds;
-- the nominal selection matrices;
-- the structured uncertainty matrices;
-- the regularization parameters.
+```python
+import numpy as np
+from coupled_robust_riccati_v4 import CoupledRobustRiccati
+```
 
-A typical workflow is:
+Consider a simple problem with two observable clusters:
+
+```python
+clusters = ["A", "B"]
+
+F = {
+    "A": np.array([
+        [1.0, 0.1],
+        [0.0, 1.0]
+    ]),
+    "B": np.array([
+        [1.0, 0.1],
+        [0.0, 0.9]
+    ]),
+}
+
+G = {
+    "A": np.array([
+        [0.0],
+        [1.0]
+    ]),
+    "B": np.array([
+        [0.0],
+        [1.0]
+    ]),
+}
+
+Q = {
+    "A": np.eye(2),
+    "B": np.eye(2),
+}
+
+R = {
+    "A": np.eye(1),
+    "B": np.eye(1),
+}
+```
+
+Define the cluster-dependent system-selection matrices and their structured uncertainty:
+
+```python
+Cbar = {
+    "A": np.eye(2),
+    "B": np.eye(2),
+}
+
+M_C = {
+    "A": np.eye(2),
+    "B": np.eye(2),
+}
+
+E_C = {
+    "A": 0.1 * np.eye(2),
+    "B": 0.05 * np.eye(2),
+}
+
+S = {
+    "A": 10.0 * np.eye(2),
+    "B": 10.0 * np.eye(2),
+}
+```
+
+Define the nominal cluster transition probabilities and their uncertainty bounds:
+
+```python
+qbar = {
+    "A": {
+        "A": 0.90,
+        "B": 0.10,
+    },
+    "B": {
+        "A": 0.20,
+        "B": 0.80,
+    },
+}
+
+alpha = {
+    "A": {
+        "A": 0.05,
+        "B": 0.05,
+    },
+    "B": {
+        "A": 0.05,
+        "B": 0.05,
+    },
+}
+```
+
+Create the solver:
 
 ```python
 solver = CoupledRobustRiccati(
     F=F,
     G=G,
-    clusters=clusters,
     Q=Q,
     R=R,
     S=S,
-    qbar=qbar,
-    alpha=alpha,
     Cbar=Cbar,
     M_C=M_C,
     E_C=E_C,
-    mu1=mu1,
-    mu2=mu2,
-    beta=beta,
+    qbar=qbar,
+    alpha=alpha,
+    mu2=10.0,
+    beta=1.01,
+    tol=1e-10,
+    max_iter=10_000,
 )
 ```
 
-To solve the finite-penalty formulation from Theorem IV.3:
+Solve the coupled robust Riccati equations:
 
 ```python
-P, K = solver.solve_TheoremIV3()
+result = solver.solve_theorem(verbose=True)
+
+print("Converged:", result.converged)
+print("Iterations:", result.iterations)
+print("Final error:", result.error)
+
+for l in clusters:
+    print(f"\nP[{l}] =")
+    print(result.P[l])
+
+    print(f"\nK[{l}] =")
+    print(result.K[l])
 ```
 
-To solve the limiting recursion from Corollary V.1:
+The resulting controller is cluster dependent. At each time step, the feedback gain associated with the currently observed cluster is applied.
+
+## Stability Check
+
+After convergence of the Riccati recursion, the sufficient stability conditions can be checked numerically:
 
 ```python
-P, K = solver.solve_CorollaryVI()
+stability = solver.check_stability_sufficient_conditions(result)
+
+print(
+    "All sufficient stability conditions satisfied:",
+    stability.all_satisfied
+)
+
+for l in clusters:
+    print(f"\nCluster {l}")
+    print("Lambda condition:", stability.condition_lambda[l])
+    print("Lambda margin:", stability.lambda_margin[l])
+    print("S condition:", stability.condition_S[l])
+    print("S minimum-eigenvalue margin:", stability.S_margin_min_eig[l])
+    print("Conditions satisfied:", stability.satisfied[l])
 ```
 
-The returned dictionaries contain the Riccati matrices and cluster-dependent feedback gains:
+A positive `lambda_margin` indicates that the corresponding scalar robustness condition is satisfied.
+
+A nonnegative `S_margin_min_eig` indicates that the corresponding matrix inequality is positive semidefinite, up to the numerical tolerance used by the implementation.
+
+The flag
 
 ```python
-P[l]   # Riccati matrix associated with cluster l
-K[l]   # Feedback gain associated with cluster l
+stability.all_satisfied
 ```
 
-## Numerical Example
+is `True` only when the sufficient stability conditions are satisfied for every observable cluster.
 
-The example included in the code considers the fault-susceptible lateral-directional aircraft dynamics used in the accompanying paper.
+## Returned Results
 
-The example demonstrates how to:
+The Riccati solver returns a `RiccatiResult` object containing:
 
-1. construct the mode-lifted system;
-2. define the observed clusters;
-3. specify uncertain cluster transition probabilities;
-4. construct the structured mode-selection uncertainty;
-5. solve the coupled robust Riccati equations; and
-6. obtain a feedback gain for each observed cluster.
+| Variable | Description |
+| --- | --- |
+| `P` | Cluster-dependent Riccati matrices |
+| `K` | Cluster-dependent feedback gains |
+| `Psi` | Coupled future-cost matrices |
+| `W_C` | Robust auxiliary matrices |
+| `Omega` | Effective matrices used in the Riccati recursion |
+| `lam` | Cluster-dependent robustness parameters |
+| `iterations` | Number of Riccati iterations |
+| `converged` | Convergence flag |
+| `error` | Final iteration error |
 
-## Reference
+The stability routine returns:
 
-If you use this implementation in academic work, please cite:
-
-```bibtex
-@inproceedings{persiani2027cluster,
-  title  = {Control of Markov Jump Linear Systems with Lumpable Cluster Observations},
-  author = {Persiani, Carlos A. F. and Padmanabhan, Ram and Ornik, Melkior and Terra, Marco H.},
-  year   = {2027}
-}
-```
-
-The citation information will be updated following publication.
+| Variable | Description |
+| --- | --- |
+| `condition_lambda` | Result of the scalar stability condition for each cluster |
+| `condition_S` | Result of the matrix stability condition for each cluster |
+| `lambda_margin` | Numerical margin of the scalar condition |
+| `S_margin_min_eig` | Minimum eigenvalue margin of the matrix condition |
+| `satisfied` | Whether both conditions hold for each cluster |
+| `all_satisfied` | Whether the sufficient conditions hold for every cluster |
 
 ## Notes
 
-This repository contains research code associated with the theoretical developments of the accompanying paper. It is primarily intended to reproduce the proposed Riccati-based controller and the numerical examples presented in the manuscript.
+All cluster-dependent quantities are represented using Python dictionaries. The same cluster keys must therefore be used consistently across the system, cost, uncertainty, and transition-probability matrices.
 
-For the mathematical derivation, assumptions, uncertainty formulation, convergence analysis, and stability conditions, please refer to the accompanying paper.
+The implementation is intended primarily as a research and numerical-validation tool for robust control of Markov jump linear systems under uncertain cluster observations.
