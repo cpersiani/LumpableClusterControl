@@ -162,38 +162,6 @@ for l in clusters:
 
 The resulting controller is cluster dependent. At each time step, the feedback gain associated with the currently observed cluster is applied.
 
-## Stability Check
-
-After convergence of the Riccati recursion, the sufficient stability conditions can be checked numerically:
-
-```python
-stability = solver.check_stability_sufficient_conditions(result)
-
-print(
-    "All sufficient stability conditions satisfied:",
-    stability.all_satisfied
-)
-
-for l in clusters:
-    print(f"\nCluster {l}")
-    print("Lambda condition:", stability.condition_lambda[l])
-    print("Lambda margin:", stability.lambda_margin[l])
-    print("S condition:", stability.condition_S[l])
-    print("S minimum-eigenvalue margin:", stability.S_margin_min_eig[l])
-    print("Conditions satisfied:", stability.satisfied[l])
-```
-
-A positive `lambda_margin` indicates that the corresponding scalar robustness condition is satisfied.
-
-A nonnegative `S_margin_min_eig` indicates that the corresponding matrix inequality is positive semidefinite, up to the numerical tolerance used by the implementation.
-
-The flag
-
-```python
-stability.all_satisfied
-```
-
-is `True` only when the sufficient stability conditions are satisfied for every observable cluster.
 
 ## Returned Results
 
