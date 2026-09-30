@@ -17,13 +17,22 @@ class RiccatiResult:
     P: Dict[Key, Array]
     K: Dict[Key, Array]
     Psi: Dict[Key, Array]
-    Pi: Dict[Key, Array]
-    Z: Dict[Key, Array]
+    W_C: Dict[Key, Array]
     Omega: Dict[Key, Array]
     lam: Dict[Key, float]
     iterations: int
     converged: bool
     error: float
+
+
+@dataclass
+class StabilityCheck:
+    condition_lambda: Dict[Key, bool]
+    condition_S: Dict[Key, bool]
+    lambda_margin: Dict[Key, float]
+    S_margin_min_eig: Dict[Key, float]
+    satisfied: Dict[Key, bool]
+    all_satisfied: bool
 
 
 class CoupledRobustRiccati:
@@ -40,7 +49,6 @@ class CoupledRobustRiccati:
         E_C: Mapping[Key, Array],
         qbar: Mapping[Key, Mapping[Key, float]],
         alpha: Mapping[Key, Mapping[Key, float]],
-        mu1: float,
         mu2: float,
         beta: float = 1.01,
         tol: float = 1e-10,
@@ -60,7 +68,6 @@ class CoupledRobustRiccati:
         self.qbar = {k: dict(v) for k, v in qbar.items()}
         self.alpha = {k: dict(v) for k, v in alpha.items()}
 
-        self.mu1 = float(mu1)
         self.mu2 = float(mu2)
         self.beta = float(beta)
         self.tol = float(tol)
@@ -70,8 +77,8 @@ class CoupledRobustRiccati:
         self._validate()
 
     def _validate(self) -> None:
-        if self.mu1 <= 0 or self.mu2 <= 0:
-            raise ValueError("mu1 and mu2 must be positive.")
+        if self.mu2 <= 0:
+            raise ValueError("mu2 must be positive.")
         if self.beta <= 1.0:
             raise ValueError("beta must be greater than one.")
 
@@ -108,7 +115,6 @@ class CoupledRobustRiccati:
             if self.Cbar[l].shape != (n, nz):
                 raise ValueError(f"Cbar[{l!r}] must be ({n}, {nz}).")
 
-            # delta C_l = M_C_l Delta_C_l E_C_l
             if self.M_C[l].shape[0] != n:
                 raise ValueError(
                     f"M_C[{l!r}] must have {n} rows."
@@ -137,34 +143,20 @@ class CoupledRobustRiccati:
                 raise ValueError(f"alpha[{l!r}] must be elementwise nonnegative.")
 
     def _lambda(self, l: Key) -> float:
-        """lambda_l = beta * mu2 * ||M_C_l.T M_C_l||_2."""
         gram = self.M_C[l].T @ self.M_C[l]
         return self.beta * self.mu2 * np.linalg.norm(gram, ord=2)
 
     def _psi(self, l: Key, P: Mapping[Key, Array]) -> Array:
-        """Psi_l = sum_d (qbar[l,d] + alpha[l,d]) P_d."""
         n = self.Q[l].shape[0]
         Psi = np.zeros((n, n))
         for d in self.clusters:
             Psi += (self.qbar[l][d] + self.alpha[l][d]) * P[d]
         return _sym(Psi)
 
-    def _pi_selection(self, l: Key) -> Tuple[Array, float]:
-        """
-        Pi_l = (mu2^-1 I - lambda_l^-1 M_C M_C.T)^-1.
-
-        If M_C = 0, the selection uncertainty vanishes and the limiting
-        expression is Pi_l = mu2 I.
-        """
+    def _W_C(self, l: Key) -> Tuple[Array, float]:
         n = self.Cbar[l].shape[0]
         lam = self._lambda(l)
         gram = self.M_C[l] @ self.M_C[l].T
-
-        if np.linalg.norm(gram, ord=2) <= np.finfo(float).eps:
-            raise np.linalg.LinAlgError(
-                f"Robust admissibility failed in cluster {l!r}: "
-                f"M_C M_C.T is (numerically) zero."
-            )
 
         H = (1.0 / self.mu2) * np.eye(n) - (1.0 / lam) * gram
         H = _sym(H)
@@ -179,52 +171,41 @@ class CoupledRobustRiccati:
 
     def _theorem_matrices(
         self, l: Key, P: Mapping[Key, Array]
-    ) -> Tuple[Array, Array, Array, Array, float]:
-        """Return (Psi_l, Pi_l, Z_l, Omega_l, lambda_l)."""
-        nz = self.F[l].shape[0]
+    ) -> Tuple[Array, Array, Array, float]:
+        """Return (Psi_l, W_l^C, Omega_l, lambda_l)."""
         Psi = self._psi(l, P)
-        Pi, lam = self._pi_selection(l)
+        W_C, lam = self._W_C(l)
 
-        middle = Pi - Pi @ np.linalg.solve(Psi + Pi, Pi)
-        Z = (
+        A = _sym(Psi + W_C)
+        middle = W_C - W_C @ np.linalg.solve(A, W_C)
+        Omega = (
             self.S[l]
             + lam * (self.E_C[l].T @ self.E_C[l])
             + self.Cbar[l].T @ middle @ self.Cbar[l]
         )
-        Z = _sym(Z)
+        Omega = _sym(Omega)
 
-        eig_min = np.linalg.eigvalsh(Z).min()
+        eig_min = np.linalg.eigvalsh(Omega).min()
         if eig_min <= 0:
             raise np.linalg.LinAlgError(
-                f"Z[{l!r}] is not positive definite "
+                f"Omega[{l!r}] is not positive definite "
                 f"(minimum eigenvalue = {eig_min:.3e})."
             )
 
-        Omega = self.mu1 * np.eye(nz) - self.mu1**2 * np.linalg.solve(
-            self.mu1 * np.eye(nz) + Z,
-            np.eye(nz)
-        )
-        
-        return Psi, Pi, Z, _sym(Omega), lam
+        return Psi, W_C, Omega, lam
 
     def _riccati_theorem_update(
         self,
         l: Key,
         P: Mapping[Key, Array],
     ) -> Tuple[Array, Array, Array]:
+        """One Riccati update using Omega_{l,k} from Theorem 1."""
+        _, _, Omega, _ = self._theorem_matrices(l, P)
 
-        _, _, _, Omega, _ = self._theorem_matrices(l, P)
-
-        H = (
-            self.R[l]
-            + self.G[l].T @ Omega @ self.G[l]
-        )
-        H = _sym(H)
-
+        H = _sym(self.R[l] + self.G[l].T @ Omega @ self.G[l])
         B = self.G[l].T @ Omega @ self.F[l]
 
         K = -np.linalg.solve(H, B)
-
         P_new = (
             self.Q[l]
             + self.F[l].T @ Omega @ self.F[l]
@@ -233,112 +214,60 @@ class CoupledRobustRiccati:
 
         return _sym(P_new), K, Omega
 
-    def _riccati_corollary_update(
+    def check_stability_sufficient_conditions(
         self,
-        l: Key,
-        P: Mapping[Key, Array],
-    ) -> Tuple[Array, Array, Array]:
+        result: RiccatiResult,
+        atol: float = 1e-10,
+    ) -> StabilityCheck:
 
-        _, _, Z, _, _ = self._theorem_matrices(l, P)
 
-        H = (
-            self.R[l]
-            + self.G[l].T @ Z @ self.G[l]
-        )
-        H = _sym(H)
-
-        B = self.G[l].T @ Z @ self.F[l]
-
-        K = -np.linalg.solve(H, B)
-
-        P_new = (
-            self.Q[l]
-            + self.F[l].T @ Z @ self.F[l]
-            - B.T @ np.linalg.solve(H, B)
-        )
-
-        return _sym(P_new), K, Z
-
-    def solve_TheoremIV3(
-        self,
-        P0: Mapping[Key, Array] | None = None,
-        verbose: bool = False,
-    ) -> RiccatiResult:
-
-        if P0 is None:
-            P = {
-                l: self.Q[l].copy()
-                for l in self.clusters
-            }
-        else:
-            P = {
-                l: np.asarray(P0[l], dtype=float).copy()
-                for l in self.clusters
-            }
-
-        converged = False
-        error = np.inf
-
-        for it in range(1, self.max_iter + 1):
-
-            P_new: Dict[Key, Array] = {}
-            K_new: Dict[Key, Array] = {}
-
-            for l in self.clusters:
-                P_new[l], K_new[l], _ = self._riccati_theorem_update(l, P)
-
-            error = max(
-                np.linalg.norm(
-                    P_new[l] - P[l],
-                    ord="fro",
-                )
-                for l in self.clusters
-            )
-
-            if verbose and (it == 1 or it % 50 == 0):
-                print(
-                    f"iteration {it:5d} | "
-                    f"error = {error:.3e}"
-                )
-
-            P = P_new
-
-            if error < self.tol:
-                converged = True
-                break
-
-        # Compute controller from the final Riccati set.
-        K_final: Dict[Key, Array] = {}
-        Psi_final: Dict[Key, Array] = {}
-        Pi_final: Dict[Key, Array] = {}
-        Z_final: Dict[Key, Array] = {}
-        Omega_final: Dict[Key, Array] = {}
-        lam_final: Dict[Key, float] = {}
+        condition_lambda: Dict[Key, bool] = {}
+        condition_S: Dict[Key, bool] = {}
+        lambda_margin: Dict[Key, float] = {}
+        S_margin_min_eig: Dict[Key, float] = {}
+        satisfied: Dict[Key, bool] = {}
 
         for l in self.clusters:
-            _, K_final[l], _ = self._riccati_theorem_update(l, P)
-            (
-                Psi_final[l],
-                Pi_final[l],
-                Z_final[l],
-                Omega_final[l],
-                lam_final[l],
-            ) = self._theorem_matrices(l, P)
+            Psi = result.Psi[l]
+            W_C = result.W_C[l]
+            lam = result.lam[l]
+            M = self.M_C[l]
 
-        return RiccatiResult(
-            P=P,
-            K=K_final,
-            Psi=Psi_final,
-            Pi=Pi_final,
-            Z=Z_final,
-            Omega=Omega_final,
-            lam=lam_final,
-            iterations=it,
-            converged=converged,
-            error=error,
+            bound = np.linalg.norm(M.T @ Psi @ M, ord=2)
+            lambda_margin[l] = lam - bound
+            condition_lambda[l] = bool(lambda_margin[l] > atol)
+
+            D = lam * np.eye(M.shape[1]) - M.T @ Psi @ M
+            Psi_C_l = _sym(
+                Psi
+                + Psi @ M @ np.linalg.solve(D, M.T @ Psi)
+            )
+
+            A = _sym(Psi + W_C)
+            rhs_inner = (
+                Psi_C_l
+                - W_C
+                + W_C @ np.linalg.solve(A, W_C)
+            )
+
+            rhs = self.Cbar[l].T @ rhs_inner @ self.Cbar[l]
+            residual = _sym(self.S[l] - rhs)
+            min_eig = float(np.linalg.eigvalsh(residual).min())
+            S_margin_min_eig[l] = min_eig
+            condition_S[l] = bool(min_eig >= -atol)
+
+            satisfied[l] = condition_lambda[l] and condition_S[l]
+
+        return StabilityCheck(
+            condition_lambda=condition_lambda,
+            condition_S=condition_S,
+            lambda_margin=lambda_margin,
+            S_margin_min_eig=S_margin_min_eig,
+            satisfied=satisfied,
+            all_satisfied=all(satisfied.values()),
         )
 
-    def solve_CorollaryVI(self,
+    def solve_theorem(self,
             P0: Mapping[Key, Array] | None = None,
             verbose: bool = False,
         ) -> RiccatiResult:
@@ -364,7 +293,7 @@ class CoupledRobustRiccati:
                 K_new: Dict[Key, Array] = {}
     
                 for l in self.clusters:
-                    P_new[l], K_new[l], _ = self._riccati_corollary_update(l, P)
+                    P_new[l], K_new[l], _ = self._riccati_theorem_update(l, P)
     
                 error = max(
                     np.linalg.norm(
@@ -386,20 +315,17 @@ class CoupledRobustRiccati:
                     converged = True
                     break
     
-            # Compute controller from the final Riccati set.
             K_final: Dict[Key, Array] = {}
             Psi_final: Dict[Key, Array] = {}
-            Pi_final: Dict[Key, Array] = {}
-            Z_final: Dict[Key, Array] = {}
+            W_C_final: Dict[Key, Array] = {}
             Omega_final: Dict[Key, Array] = {}
             lam_final: Dict[Key, float] = {}
     
             for l in self.clusters:
-                _, K_final[l], _ = self._riccati_corollary_update(l, P)
+                _, K_final[l], _ = self._riccati_theorem_update(l, P)
                 (
                     Psi_final[l],
-                    Pi_final[l],
-                    Z_final[l],
+                    W_C_final[l],
                     Omega_final[l],
                     lam_final[l],
                 ) = self._theorem_matrices(l, P)
@@ -408,8 +334,7 @@ class CoupledRobustRiccati:
                 P=P,
                 K=K_final,
                 Psi=Psi_final,
-                Pi=Pi_final,
-                Z=Z_final,
+                W_C=W_C_final,
                 Omega=Omega_final,
                 lam=lam_final,
                 iterations=it,
@@ -615,20 +540,15 @@ if __name__ == "__main__":
         E_C=E_C,
         qbar=qbar,
         alpha=alpha,
-        mu1=1e8,
-        mu2=10.0,
-        beta=1.01,
+        mu2=100,
+        beta=1.0001,
         tol=1e-10,
         max_iter=10_000,
     )
 
-    result = solver.solve_CorollaryVI(
+    result = solver.solve_theorem(
         verbose=True
     )
-
-    # result = solver.solve_TheoremIV3(
-    #     verbose=True
-    # )
 
     # ---------------------------------------------------------------
     # Results
