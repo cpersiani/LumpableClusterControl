@@ -6,16 +6,6 @@ The implementation considers the case in which the true Markov mode is not direc
 
 The solver computes cluster-dependent stationary Riccati matrices and feedback gains and provides a numerical verification of sufficient stability conditions for the resulting closed-loop system.
 
-## Features
-
-- Coupled Riccati iteration over observable Markov clusters
-- Cluster-dependent state-feedback gains
-- Structured uncertainty in the system-selection matrices
-- Uncertainty bounds for cluster transition probabilities
-- Automatic construction of the robust auxiliary matrices
-- Convergence monitoring for the coupled Riccati recursion
-- Numerical verification of sufficient stability conditions
-- Stability margins reported independently for each cluster
 
 ## Requirements
 
@@ -31,7 +21,7 @@ Import the solver:
 
 ```python
 import numpy as np
-from coupled_robust_riccati_v4 import CoupledRobustRiccati
+from coupled_robust_riccati import CoupledRobustRiccati
 ```
 
 Consider a simple problem with two observable clusters:
@@ -191,7 +181,5 @@ The stability routine returns:
 | `all_satisfied` | Whether the sufficient conditions hold for every cluster |
 
 ## Notes
-
-All cluster-dependent quantities are represented using Python dictionaries. The same cluster keys must therefore be used consistently across the system, cost, uncertainty, and transition-probability matrices.
 
 The implementation is intended primarily as a research and numerical-validation tool for robust control of Markov jump linear systems under uncertain cluster observations.
